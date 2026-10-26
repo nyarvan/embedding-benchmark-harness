@@ -1,6 +1,7 @@
-"""Per-query metrics and paired-bootstrap comparison of retrieval strategies."""
+"""Per-query metrics and paired bootstrap comparison of retrieval runs."""
 import itertools
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,11 @@ from harness.loaders import load_beir_dataset
 CHUNK_STRATEGIES = ('fixed', 'recursive')
 METRICS = ('NDCG@10', 'Recall@10')
 EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
-SAVED_METRICS_PATH = 'results/scifact_500docs_chunking_topk200.json'
+# Model name -> file with the metrics saved by main.py for that model
+SAVED_METRICS_PATHS = {
+    'bge_m3': 'results/scifact_500docs_chunking_topk200.json',
+    'openai_3_small': 'results/scifact_500docs_openai.json',
+}
 # Strategy name -> suffix of its run name in the saved metrics file
 RESULT_KEY_SUFFIXES = {
     'baseline': 'classic',
@@ -158,7 +163,7 @@ def run_significance_analysis(name: str = 'bge_m3', top_k: int = 50) -> None:
         qrels, retrieve_documents(s, queries, path, top_k), active
     ) for s, path in strategies.items()}
 
-    expected = load_saved_metrics(SAVED_METRICS_PATH, name)
+    expected = load_saved_metrics(SAVED_METRICS_PATHS[name], name)
 
     check_against_saved_metrics(scores, len(qrels), expected)
 
@@ -175,4 +180,5 @@ def run_significance_analysis(name: str = 'bge_m3', top_k: int = 50) -> None:
 
 
 if __name__ == '__main__':
-    run_significance_analysis('bge_m3')
+    # Usage: python significance.py [model_name], default bge_m3
+    run_significance_analysis(sys.argv[1] if len(sys.argv) > 1 else 'bge_m3')

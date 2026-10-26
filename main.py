@@ -1,4 +1,7 @@
-"""Embedding pipeline: build and cache embeddings, retrieve, evaluate, save metrics."""
+"""
+Embedding pipeline: build and cache embeddings, retrieve, evaluate, save
+metrics.
+"""
 from collections.abc import Callable
 from pathlib import Path
 
@@ -7,26 +10,35 @@ from sentence_transformers import SentenceTransformer
 
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
-from harness.embed import Embedding
+from harness.embed import Embedding, Encoder
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset, save_metrics
+from harness.openai_encoder import OpenAIEncoder
 
 CHUNK_SIZE = 500
-# One model per experiment; e5_large_v2 ('intfloat/e5-large-v2') is disabled
-MODEL_IDS = {'bge_m3': 'BAAI/bge-m3'}
-RESULTS_PATH = 'results/scifact_500docs_chunking_topk200.json'
+MODEL_IDS = {
+    # 'bge_m3': 'BAAI/bge-m3',
+    # 'e5_large_v2': 'intfloat/e5-large-v2',
+    'openai_3_small': 'text-embedding-3-small'
+}
+RESULTS_PATH = 'results/scifact_500docs_openai.json'
 
 
-def load_models() -> dict[str, SentenceTransformer]:
-    """Load the embedding models by short name (heavy, call only when needed)."""
-    return {
-        name: SentenceTransformer(model_id)
-        for name, model_id in MODEL_IDS.items()
-    }
+def load_models() -> dict[str, Encoder]:
+    """
+    Load the embedding models by short name (heavy, call only when needed).
+    """
+    models = {}
+    for name, model in MODEL_IDS.items():
+        if name.startswith('openai_'):
+            models[name] = OpenAIEncoder(model)
+            continue
+        models[name] = SentenceTransformer(model)
+    return models
 
 
 def build_document_embeddings(
-        model: SentenceTransformer,
+        model: Encoder,
         documents: list[tuple[str, dict[str, str]]], path: str | Path
 ) -> None:
     """Encode whole documents and save them, unless `path` already exists.
@@ -44,7 +56,7 @@ def build_document_embeddings(
 
 
 def build_query_embeddings(
-        model: SentenceTransformer, queries: dict[str, str], path: str | Path
+        model: Encoder, queries: dict[str, str], path: str | Path
 ) -> None:
     """Encode queries and save them, unless `path` already exists."""
     if Path(path).exists():
@@ -60,7 +72,7 @@ def build_query_embeddings(
 
 
 def build_chunk_embeddings(
-        model: SentenceTransformer,
+        model: Encoder,
         documents: list[tuple[str, dict[str, str]]], path: str | Path,
         chunker: Chunking, splitter: Callable[[str], list[str]]
 ) -> None:
@@ -125,7 +137,9 @@ def find_relevant(
         qrels: dict[str, dict[str, int]],
         results: dict[str, dict[str, float]]
 ) -> list[tuple[str, str]]:
-    """List (query_id, doc_id) pairs of retrieved documents that are relevant."""
+    """
+    List (query_id, doc_id) pairs of retrieved documents that are relevant.
+    """
     relevants = []
 
     for q_id, docs in results.items():

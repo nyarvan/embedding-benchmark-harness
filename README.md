@@ -9,7 +9,8 @@ single averaged number: per-query scores, paired bootstrap confidence
 intervals, and a tool to inspect the queries where one strategy beats another.
 
 Current scope: **SciFact**, a 500-document subset, local open-source models
-(`BAAI/bge-m3`, `intfloat/e5-large-v2`) via `sentence-transformers` on CPU.
+(`BAAI/bge-m3`, `intfloat/e5-large-v2`) via `sentence-transformers` on CPU,
+and OpenAI `text-embedding-3-small` via the API.
 
 ---
 
@@ -24,8 +25,10 @@ the SciFact `train` split, 500 documents.
 |---|---|---|---|
 | `bge-m3` | 0.0215 | 0.1023 | 0.0933 |
 | `e5-large-v2` | 0.0218 | 0.1027 | 0.0967 |
+| `text-embedding-3-small` (OpenAI) | 0.0230 | 0.1076 | 0.0995 |
 
-The two models are practically indistinguishable on this subset (see
+The three models are practically indistinguishable on this subset; OpenAI is
+nominally ahead, but by less than the noise of a 99-query sample (see
 [Why the numbers are low](#why-the-numbers-are-low)).
 
 ### 2. Chunking experiment (`bge-m3`)
@@ -87,7 +90,7 @@ Queries where recursive chunking hurt the most: the relevant document dropped
 from rank 1 to rank 2–3 (queries 95, 676, 1294). It never left the top 10, so
 Recall@10 did not suffer.
 
-### Conclusion
+### Conclusion for `bge-m3`
 
 On SciFact with `bge-m3`, chunking into 500-character pieces gives **no
 statistically significant gain**. Recursive chunking is nominally the best
@@ -109,6 +112,44 @@ Two caveats:
 - The title is prepended to every chunk and weighs more in a short chunk. Part
   of the gain may come from the title, not from the matching sentence. This is
   not tested yet (see [Roadmap](#roadmap)).
+
+### 5. Does it replicate? `text-embedding-3-small`
+
+The same experiment with OpenAI embeddings (same chunks, same title format):
+
+| Strategy | Chunks | P@5 | Recall@10 | NDCG@10 |
+|---|---|---|---|---|
+| No chunking (baseline) | 500 | **0.0230** | 0.1076 | **0.0995** |
+| Fixed-size | 1639 | 0.0225 | **0.1089** | 0.0989 |
+| Recursive | 1842 | 0.0227 | 0.1076 | 0.0984 |
+
+Paired bootstrap on the 99 active queries (`strategy − baseline`, positive
+means chunking is better):
+
+| Comparison | ΔNDCG@10 | 95% CI | ΔRecall@10 | 95% CI |
+|---|---|---|---|---|
+| Fixed − baseline | −0.005 | [−0.035, +0.025] | +0.010 | [0.000, +0.030] |
+| Recursive − baseline | −0.009 | [−0.036, +0.017] | 0.000 | [0.000, 0.000] |
+| Recursive − fixed | −0.004 | [−0.020, +0.012] | −0.010 | [−0.030, 0.000] |
+
+| Strategy vs baseline | NDCG@10 better / worse / same | Recall@10 better / worse |
+|---|---|---|
+| Fixed-size | 7 / 12 / 80 | 1 / 0 |
+| Recursive | 6 / 10 / 83 | 0 / 0 |
+
+With OpenAI, chunking does **not** help: NDCG@10 is nominally slightly lower
+and Recall@10 is unchanged (recursive changes no query at all). Every interval
+includes zero. The direction is the opposite of the `bge-m3` result, so the
+nominal gain seen with `bge-m3` is not a general property of chunking on this
+data; it may be model-specific or simply noise. Telling these apart needs more
+queries, not more analysis of these 99.
+
+### Overall
+
+On this 500-document SciFact subset, 500-character chunking neither helps nor
+hurts in a way that can be told from noise, for either model. Treat the
+`bge-m3` query-level observations above as hypotheses about how embeddings of
+long abstracts dilute single claims, not as a measured effect.
 
 ### Why the numbers are low
 
@@ -165,6 +206,7 @@ embedding-benchmark-harness/
 ├── harness/
 │   ├── loaders.py       # BEIR download/loading, metrics → JSON
 │   ├── embed.py         # encoding, .npz persistence, cosine search
+│   ├── openai_encoder.py # OpenAI embeddings API behind the same encode()
 │   ├── aggregate.py     # chunk ranking → document ranking (max-pooling)
 │   └── evaluate.py      # P@5, Recall@10, NDCG@10 via BEIR
 ├── domain/
@@ -173,7 +215,7 @@ embedding-benchmark-harness/
 ├── significance.py      # per-query scores, paired bootstrap
 ├── inspect_losers.py    # win/loss counts, query-level inspection
 ├── text_lengths.py      # length statistics for choosing the chunk size
-├── tests/               # pytest: chunkers, aggregation
+├── tests/               # pytest: chunkers, aggregation, OpenAI encoder
 ├── data/                # cached embeddings (.npz), generated
 ├── datasets/            # BEIR downloads, generated
 └── results/             # metrics as JSON
@@ -200,8 +242,14 @@ python main.py
 ```
 
 Builds the document, query and chunk embeddings for every model in
-`MODEL_IDS`, retrieves, evaluates and writes
-`results/scifact_500docs_chunking_topk200.json`.
+`MODEL_IDS` (edit the dict in `main.py` to choose models), retrieves,
+evaluates and writes the metrics to `RESULTS_PATH`. Results of the runs above:
+`results/scifact_500docs_chunking_topk200.json` (`bge-m3`) and
+`results/scifact_500docs_openai.json` (OpenAI).
+
+OpenAI models need an API key: put `OPENAI_API_KEY=...` into a `.env` file in
+the repository root (it is git-ignored). The OpenAI run embeds ~4.8k short
+texts, which costs a few cents.
 
 Embeddings are cached in `data/` and **an existing file is never
 recomputed**. Delete the file after changing the model, the chunk size or the
@@ -210,9 +258,10 @@ input format; otherwise stale embeddings are silently reused.
 ### Analyse the results
 
 ```bash
-python significance.py     # verifies per-query scores against the saved table,
-                           # prints bootstrap intervals and changed queries
-python inspect_losers.py   # win/loss counts and the worst queries in detail
+python significance.py [model]    # verifies per-query scores against the saved
+                                  # table, prints bootstrap intervals and
+                                  # changed queries (bge_m3 | openai_3_small)
+python inspect_losers.py [model]  # win/loss counts, worst queries in detail
 python text_lengths.py     # document length statistics
 ```
 
@@ -263,7 +312,7 @@ trusted.
 
 ## Roadmap
 
-- [ ] OpenAI `text-embedding-3-small` as a third model
+- [x] OpenAI `text-embedding-3-small` as a third model
 - [ ] Chunks without the title, to separate the title effect from chunking
 - [ ] Full SciFact corpus (5,183 documents) for a larger effective sample
 - [ ] `e5` with query/passage prefixes; chunking experiment on `e5`

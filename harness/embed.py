@@ -1,15 +1,30 @@
-"""Encoding, persistence and cosine search for document, query and chunk embeddings."""
+"""
+Encoding, persistence and cosine search for document, query and chunk
+embeddings.
+"""
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import util
 
 from domain.chunk import Chunk
 
 # A loaded .npz archive: maps array names to arrays
 EmbeddingFile = Mapping[str, np.ndarray]
+
+
+class Encoder(Protocol):
+    """Anything that turns texts into embedding vectors.
+
+    Satisfied by sentence-transformers models and by `OpenAIEncoder`.
+    """
+
+    def encode(self, inputs: list[str], /, **kwargs) -> np.ndarray:
+        """Return an array of shape (len(inputs), dim), in input order."""
+        ...
 
 
 class InputMode(Enum):
@@ -21,7 +36,7 @@ class InputMode(Enum):
 
 
 class Embedding:
-    """Encode texts with a sentence-transformers model, save and search them.
+    """Encode texts with an `Encoder` model, save and search the embeddings.
 
     Saved .npz layouts:
         documents and queries: `document_ids`, `embeddings`. Query files store
@@ -33,7 +48,7 @@ class Embedding:
     """
 
     def __init__(
-            self, model: SentenceTransformer | None,
+            self, model: Encoder | None,
             mode: InputMode = InputMode.TITLE_TEXT,
     ):
         self.model = model

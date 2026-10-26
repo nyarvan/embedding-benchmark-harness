@@ -1,4 +1,6 @@
-"""Inspect queries where chunking wins or loses against the whole-document baseline."""
+"""Inspect queries where chunking wins or loses against the baseline."""
+import sys
+
 import numpy as np
 
 from domain.chunk import Chunking
@@ -165,4 +167,5 @@ def main(name: str = 'bge_m3', top_k: int = 50) -> None:
 
 
 if __name__ == '__main__':
-    main()
+    # Usage: python inspect_losers.py [model_name], default bge_m3
+    main(sys.argv[1] if len(sys.argv) > 1 else 'bge_m3')
