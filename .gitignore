@@ -1,0 +1,12 @@
+venv/ 
+datasets/
+*.npy
+data/*.npz
+.env
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# personal study plan, not part of the project
+ai-ml-roadmap-plan.md
+data/scifact_500.json
