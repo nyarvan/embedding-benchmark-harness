@@ -295,12 +295,28 @@ recompute.
 ### Analyse the results
 
 ```bash
-python significance.py [model]    # verifies per-query scores against the saved
-                                  # table, prints bootstrap intervals and
-                                  # changed queries (bge_m3 | openai_3_small)
+python cli.py analyze --model bge_m3 --metrics results/scifact_500docs_chunking_topk200.json --top-k 200
 python inspect_losers.py [model]  # win/loss counts, worst queries in detail
-python text_lengths.py     # document length statistics
+python text_lengths.py            # document length statistics
 ```
+
+`analyze` compares whole-document retrieval with every chunking strategy of
+one model, using the cache and the metrics file of a finished `run`:
+
+```text
+comparison            metric     mean diff  95% CI              better/worse  p (sign)
+fixed - baseline      NDCG@10    +0.0100    [-0.0201, +0.0381]  13/7          0.263
+recursive - baseline  NDCG@10    +0.0179    [-0.0052, +0.0409]  13/4          0.049
+```
+
+It takes the same setup options as `run` (`--dataset`, `--subset-size`,
+`--chunk-size`, `--chunking`, ...) plus `--metrics` (default: the file `run`
+would have written for this model) and `--resamples`. The mean difference is
+`first − second`, positive means the first is better; the interval is a paired
+bootstrap over the queries that can score at all, the p-value an exact
+two-sided sign test on the queries that differ. Before comparing, the
+per-query scores are checked against the saved metrics, so an analysis never
+rests on a cache that does not match the run.
 
 ### Tests
 
@@ -346,9 +362,8 @@ trusted.
 - `e5-large-v2` is used without its recommended `query: ` / `passage: `
   prefixes, so its numbers are likely below its potential.
 - One chunk size (500 characters) and no overlap.
-- `significance.py` and `inspect_losers.py` analyse the default setup
-  (SciFact, 500 documents, `train` queries) and read the metrics of the two
-  published runs from `results/` (paths in `SAVED_METRICS_PATHS`).
+- `inspect_losers.py` inspects the default setup only (SciFact, 500
+  documents, `train` queries); `cli.py analyze` works for any finished run.
 
 ## Roadmap
 
@@ -358,7 +373,7 @@ trusted.
 - [ ] `e5` with query/passage prefixes; chunking experiment on `e5`
 - [x] CLI: `python cli.py run --models bge_m3,e5_large_v2 --chunking fixed,recursive`
 - [x] Unit tests for every module (no network needed)
-- [ ] `cli.py analyze` for the significance tools on any run
+- [x] `cli.py analyze` for the significance tools on any run
 - [ ] Hybrid search (BM25 + dense) and reranking, as separate experiments
 
 ## License
