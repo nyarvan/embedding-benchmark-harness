@@ -1,37 +1,44 @@
-"""Per-query metrics and paired bootstrap comparison of retrieval runs."""
-import itertools
+"""Per-query metrics and paired bootstrap comparison of retrieval runs.
+
+Compares whole-document retrieval (the baseline) with each chunking strategy
+of one model on the queries that can score at all, and shows whether the
+differences can be told from noise.
+"""
 import json
-import sys
+from dataclasses import dataclass
+from itertools import combinations
+from math import comb
 from pathlib import Path
 
 import numpy as np
 
 from harness.aggregate import aggregate_to_documents
 from harness.cache import chunks_path, documents_path, queries_path
-from harness.config import CHUNK_STRATEGIES, BenchmarkConfig
+from harness.config import BASELINE, EVAL_DEPTH, BenchmarkConfig, variant_name
 from harness.embed import Embedding, EmbeddingFile
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset
 
-# The analysis covers the default benchmark setup of the pipeline
-_DEFAULTS = BenchmarkConfig()
-DATASET = _DEFAULTS.dataset
-SUBSET_SIZE = _DEFAULTS.subset_size
-SPLIT = _DEFAULTS.split
-CHUNK_SIZE = _DEFAULTS.chunk_size
 METRICS = ('NDCG@10', 'Recall@10')
-EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
-# Model name -> file with the metrics saved by the pipeline for that model
-SAVED_METRICS_PATHS = {
-    'bge_m3': 'results/scifact_500docs_chunking_topk200.json',
-    'openai_3_small': 'results/scifact_500docs_openai.json',
-}
-# Strategy name -> suffix of its run name in the saved metrics file
-RESULT_KEY_SUFFIXES = {
-    'baseline': 'classic',
-    'fixed': 'fixed_chunk',
-    'recursive': 'recursive_chunk',
-}
+EPS = 1e-9  # scores closer than this count as equal
+
+Scores = dict[str, dict[str, np.ndarray]]
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """Paired comparison of strategy `a` against `b` on one metric (a - b)."""
+
+    a: str
+    b: str
+    metric: str
+    mean_diff: float
+    low: float  # 95% bootstrap interval of the mean difference
+    high: float
+    wins: int  # queries where `a` scores higher
+    losses: int  # queries where `a` scores lower
+    p_sign: float  # exact two-sided sign test on wins and losses
+    changed: tuple[str, ...]  # ids of the queries that differ
 
 
 def get_active_queries(
@@ -48,18 +55,19 @@ def get_active_queries(
     return active
 
 
-def strategy_paths(
-    model: str, dataset: str = DATASET, subset_size: int = SUBSET_SIZE,
-    chunk_size: int = CHUNK_SIZE,
-) -> dict[str, Path]:
-    """Cache files of the three compared strategies for one model."""
-    return {
-        'baseline': documents_path(dataset, subset_size, model),
-        'fixed': chunks_path(dataset, subset_size, model, 'fixed', chunk_size),
-        'recursive': chunks_path(
-            dataset, subset_size, model, 'recursive', chunk_size
-        ),
+def strategy_paths(model: str, config: BenchmarkConfig) -> dict[str, Path]:
+    """Cache file of the baseline and of every chunking strategy of a run."""
+    paths = {
+        BASELINE: documents_path(
+            config.dataset, config.subset_size, model, config.data_dir
+        )
     }
+    for strategy in config.strategies:
+        paths[strategy] = chunks_path(
+            config.dataset, config.subset_size, model, strategy,
+            config.chunk_size, config.data_dir,
+        )
+    return paths
 
 
 def retrieve_documents(
@@ -74,13 +82,11 @@ def retrieve_documents(
     embedding = Embedding(None)
     docs = np.load(docs_path)
 
-    if strategy in CHUNK_STRATEGIES:
-        results = embedding.search_chunks(queries, docs, top_k)
-        results = aggregate_to_documents(results, EVAL_DEPTH)
-    else:
-        results = embedding.search(queries, docs, top_k)
+    if strategy == BASELINE:
+        return embedding.search(queries, docs, top_k)
 
-    return results
+    results = embedding.search_chunks(queries, docs, top_k)
+    return aggregate_to_documents(results, EVAL_DEPTH)
 
 
 def per_query_scores(
@@ -101,21 +107,33 @@ def per_query_scores(
     return {metric: np.array(values) for metric, values in scores.items()}
 
 
-def load_saved_metrics(path: str, name: str) -> dict[str, dict[str, float]]:
-    """Read saved metrics as {strategy: {metric: value}} for one model."""
+def load_saved_metrics(
+    path: str | Path, model: str, strategies: tuple[str, ...]
+) -> dict[str, dict[str, float]]:
+    """Read saved metrics as {strategy: {metric: value}} for one model.
+
+    The baseline and every strategy in `strategies` must be in the file.
+    """
     records = {
         key: value
         for record in json.loads(Path(path).read_text(encoding='utf-8'))
         for key, value in record.items()
     }
-    return {
-        strategy: records[f'{name}_{suffix}']
-        for strategy, suffix in RESULT_KEY_SUFFIXES.items()
+    names = {
+        strategy: f'{model}_{variant_name(strategy)}'
+        for strategy in (BASELINE, *strategies)
     }
+    missing = [name for name in names.values() if name not in records]
+    if missing:
+        raise ValueError(
+            f'{path} has no run named {", ".join(missing)}; was it produced '
+            'with the same model and chunking strategies?'
+        )
+    return {strategy: records[name] for strategy, name in names.items()}
 
 
 def check_against_saved_metrics(
-    scores: dict[str, dict[str, np.ndarray]], total_queries: int,
+    scores: Scores, total_queries: int,
     expected: dict[str, dict[str, float]], atol: float = 1e-4,
 ) -> None:
     """Raise if sum(per-query scores) / total_queries differs from the table.
@@ -157,46 +175,131 @@ def paired_bootstrap(
     return float(diff.mean()), float(low), float(high)
 
 
+def sign_test_p(wins: int, losses: int) -> float:
+    """Exact two-sided sign test: how likely is a split this uneven by chance.
+
+    Queries without a difference are ignored. Without any, returns 1.0.
+    """
+    total = wins + losses
+    if total == 0:
+        return 1.0
+    tail = sum(comb(total, k) for k in range(min(wins, losses) + 1))
+    return min(1.0, 2 * tail / 2 ** total)
+
+
 def changed_queries(
     a: np.ndarray, b: np.ndarray, active: list[str],
 ) -> list[str]:
     """Query ids where the two strategies scored differently."""
-    return [q for q, x, y in zip(active, a, b) if not np.isclose(x, y)]
+    return [q for q, x, y in zip(active, a, b) if abs(x - y) > EPS]
 
 
-def run_significance_analysis(name: str = 'bge_m3', top_k: int = 50) -> None:
-    """Compare baseline, fixed and recursive chunking on the active queries.
+def comparison_pairs(strategies: list[str]) -> list[tuple[str, str]]:
+    """(a, b) pairs: every strategy against the baseline, then in pairs."""
+    pairs = [(strategy, BASELINE) for strategy in strategies]
+    pairs += [(b, a) for a, b in combinations(strategies, 2)]
+    return pairs
 
-    Verifies the per-query scores against the saved metrics table first, then
-    prints the paired bootstrap result and the changed queries for every pair
-    of strategies and metric.
+
+def compare_strategies(
+    scores: Scores, active: list[str], n_resamples: int = 10_000,
+    seed: int = 0,
+) -> list[Comparison]:
+    """Compare every chunking strategy with the baseline and with the others.
+
+    `scores` maps the baseline and each strategy to its per-query metrics.
     """
-    documents, _, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
+    strategies = [name for name in scores if name != BASELINE]
+    comparisons = []
+    for a, b in comparison_pairs(strategies):
+        for metric in METRICS:
+            x, y = scores[a][metric], scores[b][metric]
+            mean, low, high = paired_bootstrap(x, y, n_resamples, seed)
+            diff = x - y
+            wins = int((diff > EPS).sum())
+            losses = int((diff < -EPS).sum())
+            comparisons.append(Comparison(
+                a, b, metric, mean, low, high, wins, losses,
+                sign_test_p(wins, losses),
+                tuple(changed_queries(x, y, active)),
+            ))
+    return comparisons
+
+
+def format_comparisons(comparisons: list[Comparison]) -> str:
+    """Aligned table of the comparisons with a short legend."""
+    header = ('comparison', 'metric', 'mean diff', '95% CI', 'better/worse',
+              'p (sign)')
+    rows = [
+        (
+            f'{c.a} - {c.b}', c.metric, f'{c.mean_diff:+.4f}',
+            f'[{c.low:+.4f}, {c.high:+.4f}]', f'{c.wins}/{c.losses}',
+            f'{c.p_sign:.3f}',
+        )
+        for c in comparisons
+    ]
+    widths = [
+        max(len(row[i]) for row in [header, *rows])
+        for i in range(len(header))
+    ]
+    lines = [
+        '  '.join(cell.ljust(width) for cell, width in zip(row, widths))
+        .rstrip()
+        for row in [header, *rows]
+    ]
+    lines.append(
+        '\nmean diff = first minus second, positive means the first is '
+        'better; better/worse = queries where the first scores higher/lower; '
+        'p = exact two-sided sign test on those queries.'
+    )
+    return '\n'.join(lines)
+
+
+def run_significance_analysis(
+    model: str, config: BenchmarkConfig, metrics_path: str | Path,
+    n_resamples: int = 10_000,
+) -> str:
+    """Compare the baseline and the chunking strategies of one model.
+
+    Needs the cache of a finished benchmark run and its saved metrics file.
+    The per-query scores are verified against the saved metrics first, so an
+    analysis never rests on a mismatching cache. Returns the report text.
+    """
+    paths = strategy_paths(model, config)
+    missing = [str(path) for path in paths.values() if not path.exists()]
+    if missing:
+        raise ValueError(
+            'Missing cache files, run the benchmark first: '
+            + ', '.join(missing)
+        )
+
+    documents, _, qrels = load_beir_dataset(
+        config.dataset, config.split, config.subset_size
+    )
     active = get_active_queries(qrels, documents)
-    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
+    if not active:
+        raise ValueError('No query has a relevant document in the subset')
 
-    strategies = strategy_paths(name)
-
-    scores = {s: per_query_scores(
-        qrels, retrieve_documents(s, queries, path, top_k), active
-    ) for s, path in strategies.items()}
-
-    expected = load_saved_metrics(SAVED_METRICS_PATHS[name], name)
-
+    queries = np.load(
+        queries_path(
+            config.dataset, config.subset_size, model, config.split,
+            config.data_dir,
+        )
+    )
+    scores = {
+        strategy: per_query_scores(
+            qrels, retrieve_documents(strategy, queries, path, config.top_k),
+            active,
+        )
+        for strategy, path in paths.items()
+    }
+    expected = load_saved_metrics(metrics_path, model, config.strategies)
     check_against_saved_metrics(scores, len(qrels), expected)
 
-    for a, b in itertools.combinations(strategies, 2):
-        for metric in METRICS:
-            mean, low, high = paired_bootstrap(
-                scores[a][metric], scores[b][metric]
-            )
-            changed = changed_queries(
-                scores[a][metric], scores[b][metric], active
-            )
-            print(f'{a}-{b}: {metric} - mean={mean}, low={low}, high={high}')
-            print(f'{changed}\n\n')
-
-
-if __name__ == '__main__':
-    # Usage: python significance.py [model_name], default bge_m3
-    run_significance_analysis(sys.argv[1] if len(sys.argv) > 1 else 'bge_m3')
+    comparisons = compare_strategies(scores, active, n_resamples)
+    title = (
+        f'{model} on {config.dataset} ({config.subset_size} documents, '
+        f'{config.split} queries): {len(active)} of {len(qrels)} queries '
+        'have a relevant document'
+    )
+    return f'{title}\n\n{format_comparisons(comparisons)}'

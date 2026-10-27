@@ -13,13 +13,14 @@ import numpy as np
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
 from harness.cache import chunks_path, documents_path, queries_path
-from harness.config import CHUNK_STRATEGIES, BenchmarkConfig
+from harness.config import (
+    BASELINE, CHUNK_STRATEGIES, EVAL_DEPTH, BenchmarkConfig, variant_name,
+)
 from harness.embed import Embedding, EmbeddingFile, Encoder
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset, save_metrics
 from harness.models import get_spec
 
-EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
 METRIC_NAMES = ('P@5', 'Recall@10', 'NDCG@10')
 
 Documents = list[tuple[str, dict[str, str]]]
@@ -222,7 +223,7 @@ def _run_model(
 
     searcher = Embedding(None)  # search needs no model
     rankings = {
-        'classic': search_saved_embeddings(
+        variant_name(BASELINE): search_saved_embeddings(
             doc_path, q_path, searcher.search, EVAL_DEPTH
         )
     }
@@ -230,7 +231,7 @@ def _run_model(
         chunk_hits = search_saved_embeddings(
             path, q_path, searcher.search_chunks, config.top_k
         )
-        rankings[f'{strategy}_chunk'] = aggregate_to_documents(
+        rankings[variant_name(strategy)] = aggregate_to_documents(
             chunk_hits, EVAL_DEPTH
         )
 

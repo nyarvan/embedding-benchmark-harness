@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
+import significance
 from harness import pipeline
 from harness.cache import run_files
 
@@ -295,3 +296,114 @@ def test_help_runs_as_a_script():
 
     assert result.returncode == 0
     assert '--models' in result.stdout
+
+
+# --- analyze -------------------------------------------------------------
+
+@pytest.fixture
+def analysis(monkeypatch):
+    """Replace the analysis; `analysis.calls` records every request."""
+    state = SimpleNamespace(calls=[], error=None)
+
+    def fake_analysis(model, config, metrics_path, n_resamples):
+        if state.error:
+            raise state.error
+        state.calls.append(SimpleNamespace(
+            model=model, config=config, metrics=Path(metrics_path),
+            resamples=n_resamples,
+        ))
+        return 'ANALYSIS REPORT'
+
+    monkeypatch.setattr(significance, 'run_significance_analysis', fake_analysis)
+    return state
+
+
+@pytest.fixture
+def metrics_file(tmp_path):
+    path = tmp_path / 'metrics.json'
+    path.write_text('[]')
+    return path
+
+
+def test_analyze_prints_the_report_and_passes_the_arguments(
+        analysis, metrics_file, capsys
+):
+    code = cli.main([
+        'analyze', '--model', 'bge_m3', '--metrics', str(metrics_file),
+        '--subset-size', '5183', '--chunking', 'fixed', '--chunk-size', '300',
+        '--top-k', '80', '--resamples', '2000', '--dataset', 'nfcorpus',
+    ])
+
+    call = analysis.calls[0]
+    assert code == 0
+    assert capsys.readouterr().out.strip() == 'ANALYSIS REPORT'
+    assert call.model == 'bge_m3'
+    assert call.metrics == metrics_file
+    assert call.resamples == 2000
+    assert call.config.dataset == 'nfcorpus'
+    assert call.config.subset_size == 5183
+    assert call.config.chunk_size == 300
+    assert call.config.top_k == 80
+    assert call.config.strategies == ('fixed',)
+
+
+def test_analyze_defaults_to_the_metrics_file_a_run_would_have_written(
+        analysis, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'results').mkdir()
+    (tmp_path / 'results' / 'scifact-500_bge_m3.json').write_text('[]')
+
+    code = cli.main(['analyze', '--model', 'bge_m3'])
+
+    assert code == 0
+    assert analysis.calls[0].metrics == Path('results/scifact-500_bge_m3.json')
+    assert analysis.calls[0].resamples == 10_000
+
+
+def test_analyze_without_a_metrics_file_asks_to_run_the_benchmark_first(
+        analysis, tmp_path, capsys
+):
+    code = cli.main(
+        ['analyze', '--model', 'bge_m3', '--metrics', str(tmp_path / 'no.json')]
+    )
+
+    assert code == 1
+    assert 'not found' in capsys.readouterr().err
+    assert analysis.calls == []
+
+
+def test_analysis_errors_become_a_one_line_error(
+        analysis, metrics_file, capsys
+):
+    analysis.error = ValueError('Missing cache files')
+
+    code = cli.main(
+        ['analyze', '--model', 'bge_m3', '--metrics', str(metrics_file)]
+    )
+
+    assert code == 1
+    assert capsys.readouterr().err.strip() == 'error: Missing cache files'
+
+
+@pytest.mark.parametrize('bad_args', [
+    [],                                         # --model is required
+    ['--model', 'nope'],
+    ['--model', 'bge_m3,e5_large_v2'],          # one model at a time
+    ['--model', 'bge_m3', '--resamples', '0'],
+    ['--model', 'bge_m3', '--chunking', 'semantic'],
+])
+def test_analyze_rejects_invalid_arguments(bad_args, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(['analyze', *bad_args])
+
+    assert exit_info.value.code == 2
+
+
+def test_analyze_reuses_the_benchmark_options_of_run():
+    args = cli.build_parser().parse_args(['analyze', '--model', 'bge_m3'])
+
+    assert (args.dataset, args.subset_size, args.split) == (
+        'scifact', 500, 'train'
+    )
+    assert args.chunking == ('fixed', 'recursive')

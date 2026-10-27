@@ -6,21 +6,22 @@ import numpy as np
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
 from harness.cache import queries_path
+from harness.config import BASELINE, BenchmarkConfig
 from harness.embed import Embedding
 from harness.loaders import load_beir_dataset
 from significance import (
-    CHUNK_SIZE, DATASET, SPLIT, SUBSET_SIZE, get_active_queries,
-    per_query_scores, retrieve_documents, strategy_paths,
+    EPS, get_active_queries, per_query_scores, retrieve_documents,
+    strategy_paths,
 )
 
-EPS = 1e-9  # scores closer than this count as equal
+DEFAULT_CONFIG = BenchmarkConfig()
 
 
 def count_changes(scores: dict[str, dict[str, np.ndarray]]) -> None:
     """Print how many queries each chunking strategy improves or hurts."""
     for strategy in ('fixed', 'recursive'):
         for metric in ('NDCG@10', 'Recall@10'):
-            diff = scores[strategy][metric] - scores['baseline'][metric]
+            diff = scores[strategy][metric] - scores[BASELINE][metric]
             print(
                 f'{strategy} {metric}: better={int((diff > EPS).sum())} '
                 f'worse={int((diff < -EPS).sum())} '
@@ -33,7 +34,7 @@ def worst_queries(
     count: int = 4,
 ) -> list[tuple[str, float]]:
     """Queries where recursive loses most NDCG@10 against the baseline."""
-    diff = scores['recursive']['NDCG@10'] - scores['baseline']['NDCG@10']
+    diff = scores['recursive']['NDCG@10'] - scores[BASELINE]['NDCG@10']
     order = np.argsort(diff)[:count]
     return [(active[i], float(diff[i])) for i in order if diff[i] < -EPS]
 
@@ -72,19 +73,25 @@ def _shorten(text: str, limit: int = 300) -> str:
 
 
 def inspect_queries(
-    q_ids: list[str], name: str, size: int = CHUNK_SIZE
+    q_ids: list[str], name: str, config: BenchmarkConfig = DEFAULT_CONFIG
 ) -> None:
     """Print, per query, ranks of relevant docs and their best chunks.
 
     Chunk texts are rebuilt with the same chunker settings as the saved chunk
-    embeddings (`size`, overlap 0); a mismatch in chunk count raises.
+    embeddings (`config.chunk_size`, overlap 0); a mismatch in chunk count
+    raises. Needs the cache of the fixed and the recursive strategy.
     """
-    documents, queries, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
+    documents, queries, qrels = load_beir_dataset(
+        config.dataset, config.split, config.subset_size
+    )
     corpus = dict(documents)
-    q_emb = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
-    paths = strategy_paths(name, chunk_size=size)
+    q_emb = np.load(queries_path(
+        config.dataset, config.subset_size, name, config.split,
+        config.data_dir,
+    ))
+    paths = strategy_paths(name, config)
     embedding = Embedding(None)
-    chunker = Chunking(size)
+    chunker = Chunking(config.chunk_size)
     splitters = {
         'fixed': chunker.fixed_chunker,
         'recursive': chunker.recursive_chunker,
@@ -92,8 +99,8 @@ def inspect_queries(
 
     # Search the whole corpus so that every relevant document gets a rank
     rankings = {
-        'baseline': embedding.search(
-            q_emb, np.load(paths['baseline']), top_k=len(corpus)
+        BASELINE: embedding.search(
+            q_emb, np.load(paths[BASELINE]), top_k=len(corpus)
         )
     }
     chunk_results, chunk_texts = {}, {}
@@ -132,7 +139,7 @@ def inspect_queries(
 
 
 def summarize_aggregated_lengths(
-    name: str, top_k: int
+    name: str, top_k: int, config: BenchmarkConfig = DEFAULT_CONFIG
 ) -> dict[str, dict[str, float]]:
     """How many documents each chunk strategy returns per query.
 
@@ -141,8 +148,11 @@ def summarize_aggregated_lengths(
     aggregation and Recall@10 is capped.
     """
     embedding = Embedding(None)
-    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
-    paths = strategy_paths(name)
+    queries = np.load(queries_path(
+        config.dataset, config.subset_size, name, config.split,
+        config.data_dir,
+    ))
+    paths = strategy_paths(name, config)
 
     summary = {}
     for strategy in ('fixed', 'recursive'):
@@ -159,17 +169,26 @@ def summarize_aggregated_lengths(
     return summary
 
 
-def main(name: str = 'bge_m3', top_k: int = 50) -> None:
+def main(
+    name: str = 'bge_m3', config: BenchmarkConfig = DEFAULT_CONFIG
+) -> None:
     """Print win/loss counts and inspect the worst queries of recursive."""
-    documents, _, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
+    documents, _, qrels = load_beir_dataset(
+        config.dataset, config.split, config.subset_size
+    )
     active = get_active_queries(qrels, documents)
-    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
+    queries = np.load(queries_path(
+        config.dataset, config.subset_size, name, config.split,
+        config.data_dir,
+    ))
 
     scores = {
         strategy: per_query_scores(
-            qrels, retrieve_documents(strategy, queries, path, top_k), active
+            qrels,
+            retrieve_documents(strategy, queries, path, config.top_k),
+            active,
         )
-        for strategy, path in strategy_paths(name).items()
+        for strategy, path in strategy_paths(name, config).items()
     }
 
     count_changes(scores)
@@ -187,7 +206,7 @@ def main(name: str = 'bge_m3', top_k: int = 50) -> None:
     ]
     print('recall gained by recursive over fixed:', gained)
 
-    inspect_queries([q for q, _ in losers[:3]], name)
+    inspect_queries([q for q, _ in losers[:3]], name, config)
 
 
 if __name__ == '__main__':

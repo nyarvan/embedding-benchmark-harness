@@ -9,6 +9,16 @@ from pathlib import Path
 from harness.cache import DEFAULT_DATA_DIR
 
 CHUNK_STRATEGIES = ('fixed', 'recursive')
+BASELINE = 'baseline'  # whole-document retrieval, the reference for chunking
+EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
+
+
+def variant_name(strategy: str) -> str:
+    """Name of a strategy inside a run name: 'classic' or '<strategy>_chunk'.
+
+    A run is saved as '<model>_<variant>', e.g. 'bge_m3_fixed_chunk'.
+    """
+    return 'classic' if strategy == BASELINE else f'{strategy}_chunk'
 
 
 @dataclass(frozen=True)

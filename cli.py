@@ -1,6 +1,7 @@
 """Command line interface of the benchmark harness.
 
     python cli.py run --models bge_m3,openai_3_small --chunking fixed,recursive
+    python cli.py analyze --model bge_m3 --metrics results/my_run.json
 
 Arguments are validated before the pipeline, and with it torch and beir, is
 imported, so mistakes and --help are reported instantly.
@@ -17,6 +18,7 @@ from harness.models import available_models, get_spec
 DEFAULTS = BenchmarkConfig()
 RESULTS_DIR = Path('results')
 NO_CHUNKING = 'none'
+DEFAULT_RESAMPLES = 10_000
 
 
 class CliError(Exception):
@@ -31,8 +33,7 @@ def csv_list(value: str) -> list[str]:
     return list(dict.fromkeys(items))
 
 
-def model_list(value: str) -> list[str]:
-    names = csv_list(value)
+def _check_models(names: list[str]) -> list[str]:
     unknown = [name for name in names if name not in available_models()]
     if unknown:
         raise argparse.ArgumentTypeError(
@@ -40,6 +41,14 @@ def model_list(value: str) -> list[str]:
             f'available: {", ".join(available_models())}'
         )
     return names
+
+
+def model_list(value: str) -> list[str]:
+    return _check_models(csv_list(value))
+
+
+def model_name(value: str) -> str:
+    return _check_models([value.strip()])[0]
 
 
 def strategy_list(value: str) -> tuple[str, ...]:
@@ -68,6 +77,34 @@ def positive_int(value: str) -> int:
     return number
 
 
+def add_config_options(parser: argparse.ArgumentParser) -> None:
+    """Options that define a benchmark setup, shared by all commands."""
+    parser.add_argument(
+        '--chunking', type=strategy_list, default=DEFAULTS.strategies,
+        metavar='LIST',
+        help=f'comma-separated from {", ".join(CHUNK_STRATEGIES)}, or '
+             f'"{NO_CHUNKING}" (default: {",".join(DEFAULTS.strategies)})',
+    )
+    parser.add_argument('--dataset', default=DEFAULTS.dataset,
+                        help='BEIR dataset name (default: %(default)s)')
+    parser.add_argument('--split', default=DEFAULTS.split,
+                        help='queries split (default: %(default)s)')
+    parser.add_argument('--subset-size', type=positive_int,
+                        default=DEFAULTS.subset_size,
+                        help='documents kept from the corpus '
+                             '(default: %(default)s)')
+    parser.add_argument('--chunk-size', type=positive_int,
+                        default=DEFAULTS.chunk_size,
+                        help='chunk length in characters '
+                             '(default: %(default)s)')
+    parser.add_argument('--top-k', type=positive_int, default=DEFAULTS.top_k,
+                        help='chunks retrieved per query before aggregation '
+                             '(default: %(default)s)')
+    parser.add_argument('--data-dir', default=str(DEFAULTS.data_dir),
+                        help='embedding cache directory '
+                             '(default: %(default)s)')
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser (cheap: no heavy imports)."""
     parser = argparse.ArgumentParser(
@@ -82,28 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
         '--models', type=model_list, required=True, metavar='LIST',
         help=f'comma-separated, from: {", ".join(available_models())}',
     )
-    run.add_argument(
-        '--chunking', type=strategy_list, default=DEFAULTS.strategies,
-        metavar='LIST',
-        help=f'comma-separated from {", ".join(CHUNK_STRATEGIES)}, or '
-             f'"{NO_CHUNKING}" (default: {",".join(DEFAULTS.strategies)})',
-    )
-    run.add_argument('--dataset', default=DEFAULTS.dataset,
-                     help='BEIR dataset name (default: %(default)s)')
-    run.add_argument('--split', default=DEFAULTS.split,
-                     help='queries split (default: %(default)s)')
-    run.add_argument('--subset-size', type=positive_int,
-                     default=DEFAULTS.subset_size,
-                     help='documents kept from the corpus '
-                          '(default: %(default)s)')
-    run.add_argument('--chunk-size', type=positive_int,
-                     default=DEFAULTS.chunk_size,
-                     help='chunk length in characters (default: %(default)s)')
-    run.add_argument('--top-k', type=positive_int, default=DEFAULTS.top_k,
-                     help='chunks retrieved per query before aggregation '
-                          '(default: %(default)s)')
-    run.add_argument('--data-dir', default=str(DEFAULTS.data_dir),
-                     help='embedding cache directory (default: %(default)s)')
+    add_config_options(run)
     run.add_argument('--output', type=Path, metavar='PATH',
                      help='metrics file (default: '
                           f'{RESULTS_DIR}/<dataset>-<subset>_<models>.json)')
@@ -111,7 +127,33 @@ def build_parser() -> argparse.ArgumentParser:
                      help='replace an existing metrics file')
     run.add_argument('--yes', action='store_true',
                      help='confirm calls to paid APIs')
+
+    analyze = commands.add_parser(
+        'analyze',
+        help='compare chunking with the baseline: bootstrap and sign test',
+    )
+    analyze.add_argument(
+        '--model', type=model_name, required=True,
+        help=f'one of: {", ".join(available_models())}',
+    )
+    add_config_options(analyze)
+    analyze.add_argument(
+        '--metrics', type=Path, metavar='PATH',
+        help='metrics file of the run to analyse (default: '
+             f'{RESULTS_DIR}/<dataset>-<subset>_<model>.json)')
+    analyze.add_argument(
+        '--resamples', type=positive_int, default=DEFAULT_RESAMPLES,
+        help='bootstrap resamples (default: %(default)s)')
     return parser
+
+
+def build_config(args: argparse.Namespace) -> BenchmarkConfig:
+    """The benchmark setup described by the shared options."""
+    return BenchmarkConfig(
+        dataset=args.dataset, subset_size=args.subset_size, split=args.split,
+        chunk_size=args.chunk_size, strategies=args.chunking,
+        top_k=args.top_k, data_dir=args.data_dir,
+    )
 
 
 def default_output(config: BenchmarkConfig, models: Sequence[str]) -> Path:
@@ -140,11 +182,7 @@ def paid_models_to_confirm(
 
 def run_command(args: argparse.Namespace) -> int:
     """Check the request, then run the benchmark and print the table."""
-    config = BenchmarkConfig(
-        dataset=args.dataset, subset_size=args.subset_size, split=args.split,
-        chunk_size=args.chunk_size, strategies=args.chunking,
-        top_k=args.top_k, data_dir=args.data_dir,
-    )
+    config = build_config(args)
     output = args.output or default_output(config, args.models)
 
     if output.exists() and not args.overwrite:
@@ -171,11 +209,34 @@ def run_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def analyze_command(args: argparse.Namespace) -> int:
+    """Print the significance analysis of a finished run."""
+    config = build_config(args)
+    metrics = args.metrics or default_output(config, [args.model])
+
+    if not metrics.exists():
+        raise CliError(
+            f'metrics file {metrics} not found; run the benchmark first or '
+            'pass --metrics'
+        )
+
+    # Heavy imports (torch, beir) only after the checks above
+    import significance
+
+    print(significance.run_significance_analysis(
+        args.model, config, metrics, args.resamples
+    ))
+    return 0
+
+
+COMMANDS = {'run': run_command, 'analyze': analyze_command}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point; returns the process exit code."""
     args = build_parser().parse_args(argv)
     try:
-        return run_command(args)
+        return COMMANDS[args.command](args)
     except (CliError, ValueError) as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
