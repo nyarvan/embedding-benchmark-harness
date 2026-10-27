@@ -6,7 +6,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
@@ -14,31 +13,15 @@ from harness.cache import chunks_path, documents_path, queries_path
 from harness.embed import Embedding, Encoder
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset, save_metrics
-from harness.openai_encoder import OpenAIEncoder
+from harness.models import get_spec
 
 DATASET = 'scifact'
 SUBSET_SIZE = 500
 SPLIT = 'train'
 CHUNK_SIZE = 500
-MODEL_IDS = {
-    # 'bge_m3': 'BAAI/bge-m3',
-    # 'e5_large_v2': 'intfloat/e5-large-v2',
-    'openai_3_small': 'text-embedding-3-small'
-}
+# Models to run; the choices are registered in harness/models.py
+MODEL_NAMES = ('openai_3_small',)
 RESULTS_PATH = 'results/scifact_500docs_openai.json'
-
-
-def load_models() -> dict[str, Encoder]:
-    """
-    Load the embedding models by short name (heavy, call only when needed).
-    """
-    models = {}
-    for name, model in MODEL_IDS.items():
-        if name.startswith('openai_'):
-            models[name] = OpenAIEncoder(model)
-            continue
-        models[name] = SentenceTransformer(model)
-    return models
 
 
 def build_document_embeddings(
@@ -186,7 +169,8 @@ def run_benchmark(
 
     retrieval_results = []
 
-    for name, model in load_models().items():
+    for name in MODEL_NAMES:
+        model = get_spec(name).create()
         embedding = Embedding(model)
         runs = {
             'classic': {'path': documents_path(DATASET, SUBSET_SIZE, name)},
