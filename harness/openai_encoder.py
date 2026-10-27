@@ -1,4 +1,6 @@
 """OpenAI embeddings API behind the same `encode` interface as local models."""
+import os
+
 import numpy as np
 import openai
 from dotenv import load_dotenv
@@ -17,6 +19,11 @@ class OpenAIEncoder:
             self, model: str = 'text-embedding-3-small', batch_size: int = 100
     ):
         load_dotenv()
+        if not os.environ.get('OPENAI_API_KEY'):
+            raise ValueError(
+                'OPENAI_API_KEY is not set: put it into a .env file or the '
+                'environment'
+            )
         self.client = openai.OpenAI(max_retries=5)
         self.model = model
         self.batch_size = batch_size

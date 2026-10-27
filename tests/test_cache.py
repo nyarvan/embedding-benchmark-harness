@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from harness.cache import cache_dir, documents_path, queries_path, chunks_path
+from harness.cache import (
+    cache_dir, chunks_path, documents_path, queries_path, run_files,
+)
 
 
 DATASET = 'scifact'
@@ -122,3 +124,30 @@ def test_data_dir_can_be_overridden(tmp_path):
     path = documents_path(DATASET, SUBSET_SIZE, MODEL, data_dir=tmp_path)
 
     assert path == tmp_path / f'{DATASET}-{SUBSET_SIZE}' / MODEL / 'documents.npz'
+
+
+def test_run_files_lists_documents_queries_and_one_file_per_strategy():
+    files = run_files(
+        DATASET, SUBSET_SIZE, MODEL, SPLIT, ('fixed', 'recursive'), CHUNK_SIZE
+    )
+
+    assert files == [
+        documents_path(DATASET, SUBSET_SIZE, MODEL),
+        queries_path(DATASET, SUBSET_SIZE, MODEL, SPLIT),
+        chunks_path(DATASET, SUBSET_SIZE, MODEL, 'fixed', CHUNK_SIZE),
+        chunks_path(DATASET, SUBSET_SIZE, MODEL, 'recursive', CHUNK_SIZE),
+    ]
+
+
+def test_run_files_without_strategies_has_no_chunk_files():
+    files = run_files(DATASET, SUBSET_SIZE, MODEL, SPLIT, (), CHUNK_SIZE)
+
+    assert files == [
+        documents_path(DATASET, SUBSET_SIZE, MODEL),
+        queries_path(DATASET, SUBSET_SIZE, MODEL, SPLIT),
+    ]
+
+
+def test_run_files_rejects_unsafe_strategy_names():
+    with pytest.raises(ValueError):
+        run_files(DATASET, SUBSET_SIZE, MODEL, SPLIT, ('../x',), CHUNK_SIZE)

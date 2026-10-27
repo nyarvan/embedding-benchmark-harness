@@ -38,6 +38,7 @@ def install_fake_client(monkeypatch, fake: FakeEmbeddings) -> None:
 
     monkeypatch.setattr(openai_encoder.openai, 'OpenAI', fake_openai)
     monkeypatch.setattr(openai_encoder, 'load_dotenv', lambda: None)
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
 
 
 @pytest.fixture
@@ -106,3 +107,16 @@ def test_encode_raises_when_api_returns_fewer_embeddings(monkeypatch):
 
     with pytest.raises(ValueError):
         OpenAIEncoder(batch_size=3).encode(TEXTS)
+
+
+def test_missing_api_key_raises_a_clear_error_before_a_client_is_built(
+        monkeypatch
+):
+    fake = FakeEmbeddings()
+    install_fake_client(monkeypatch, fake)
+    monkeypatch.delenv('OPENAI_API_KEY')
+
+    with pytest.raises(ValueError, match='OPENAI_API_KEY'):
+        OpenAIEncoder()
+
+    assert fake.client_kwargs == {}  # the client was never constructed

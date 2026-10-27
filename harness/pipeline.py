@@ -6,44 +6,24 @@ search and evaluates against the qrels. Chunk rankings are aggregated back
 to documents first, so all variants go through the same evaluation.
 """
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
-from harness.cache import (
-    DEFAULT_DATA_DIR, chunks_path, documents_path, queries_path,
-)
+from harness.cache import chunks_path, documents_path, queries_path
+from harness.config import CHUNK_STRATEGIES, BenchmarkConfig
 from harness.embed import Embedding, EmbeddingFile, Encoder
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset, save_metrics
 from harness.models import get_spec
 
-CHUNK_STRATEGIES = ('fixed', 'recursive')
 EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
 METRIC_NAMES = ('P@5', 'Recall@10', 'NDCG@10')
 
 Documents = list[tuple[str, dict[str, str]]]
 Metrics = dict[str, float]
-
-
-@dataclass(frozen=True)
-class BenchmarkConfig:
-    """Everything except the models that defines one benchmark run.
-
-    `top_k` is the retrieval depth over chunks; it must be well above
-    EVAL_DEPTH because several chunks of one document collapse into one.
-    """
-
-    dataset: str = 'scifact'
-    subset_size: int = 500
-    split: str = 'train'
-    chunk_size: int = 500
-    strategies: tuple[str, ...] = CHUNK_STRATEGIES
-    top_k: int = 50
-    data_dir: str | Path = DEFAULT_DATA_DIR
 
 
 class LazyEncoder:
@@ -216,8 +196,9 @@ def _run_model(
         documents: Documents, queries: dict[str, str],
         qrels: dict[str, dict[str, int]],
 ) -> list[tuple[str, Metrics]]:
-    """Build the missing embeddings of one model, then evaluate its variants."""
-    dataset, size, data_dir = config.dataset, config.subset_size, config.data_dir
+    """Build the missing embeddings of one model, then evaluate variants."""
+    dataset, size = config.dataset, config.subset_size
+    data_dir = config.data_dir
     doc_path = documents_path(dataset, size, name, data_dir)
     q_path = queries_path(dataset, size, name, config.split, data_dir)
     chunker = Chunking(config.chunk_size)

@@ -56,6 +56,25 @@ def chunks_path(
     return directory / f'chunks_{strategy}_{chunk_size}.npz'
 
 
+def run_files(
+        dataset: str, subset_size: int, model: str, split: str,
+        strategies: tuple[str, ...], chunk_size: int,
+        data_dir: str | Path = DEFAULT_DATA_DIR,
+) -> list[Path]:
+    """Every cache file a benchmark run of one model reads or builds."""
+    files = [
+        documents_path(dataset, subset_size, model, data_dir),
+        queries_path(dataset, subset_size, model, split, data_dir),
+    ]
+    files += [
+        chunks_path(
+            dataset, subset_size, model, strategy, chunk_size, data_dir
+        )
+        for strategy in strategies
+    ]
+    return files
+
+
 def _check_name(value: str, label: str) -> str:
     """Strip the value and reject anything that could leave the cache dir."""
     value = value.strip()
