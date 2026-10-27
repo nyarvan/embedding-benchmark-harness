@@ -131,6 +131,34 @@ def inspect_queries(
                       f'{_shorten(text)}')
 
 
+def summarize_aggregated_lengths(
+    name: str, top_k: int
+) -> dict[str, dict[str, float]]:
+    """How many documents each chunk strategy returns per query.
+
+    Diagnostic for a too small chunk-level `top_k`: when many chunks come from
+    the same document, fewer than 10 distinct documents are left after
+    aggregation and Recall@10 is capped.
+    """
+    embedding = Embedding(None)
+    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
+    paths = strategy_paths(name)
+
+    summary = {}
+    for strategy in ('fixed', 'recursive'):
+        chunks = np.load(paths[strategy])
+        hits = embedding.search_chunks(queries, chunks, top_k)
+        aggregated = aggregate_to_documents(hits, top_k)
+        lengths = np.array([len(docs) for docs in aggregated.values()])
+        summary[strategy] = {
+            'len < 10': float(np.mean(lengths < 10)),
+            'min': int(np.min(lengths)),
+            'mean': float(np.mean(lengths)),
+        }
+
+    return summary
+
+
 def main(name: str = 'bge_m3', top_k: int = 50) -> None:
     """Print win/loss counts and inspect the worst queries of recursive."""
     documents, _, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
