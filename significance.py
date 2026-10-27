@@ -8,18 +8,20 @@ import numpy as np
 
 from harness.aggregate import aggregate_to_documents
 from harness.cache import chunks_path, documents_path, queries_path
+from harness.config import CHUNK_STRATEGIES, BenchmarkConfig
 from harness.embed import Embedding, EmbeddingFile
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset
 
-DATASET = 'scifact'
-SUBSET_SIZE = 500
-SPLIT = 'train'
-CHUNK_SIZE = 500
-CHUNK_STRATEGIES = ('fixed', 'recursive')
+# The analysis covers the default benchmark setup of the pipeline
+_DEFAULTS = BenchmarkConfig()
+DATASET = _DEFAULTS.dataset
+SUBSET_SIZE = _DEFAULTS.subset_size
+SPLIT = _DEFAULTS.split
+CHUNK_SIZE = _DEFAULTS.chunk_size
 METRICS = ('NDCG@10', 'Recall@10')
 EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
-# Model name -> file with the metrics saved by main.py for that model
+# Model name -> file with the metrics saved by the pipeline for that model
 SAVED_METRICS_PATHS = {
     'bge_m3': 'results/scifact_500docs_chunking_topk200.json',
     'openai_3_small': 'results/scifact_500docs_openai.json',

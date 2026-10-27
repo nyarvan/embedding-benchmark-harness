@@ -203,22 +203,26 @@ characters. At 500, 98% of documents are split (about 3.3 chunks each); at
 
 ```text
 embedding-benchmark-harness/
+├── cli.py                # command line: `python cli.py run ...`
 ├── harness/
-│   ├── loaders.py       # BEIR download/loading, metrics → JSON
-│   ├── embed.py         # encoding, .npz persistence, cosine search
+│   ├── pipeline.py       # embed → retrieve → aggregate → evaluate → save
+│   ├── config.py         # BenchmarkConfig (light: no torch/beir imports)
+│   ├── models.py         # registry of models, lazily built, paid flag
+│   ├── cache.py          # layout of the embedding cache on disk
+│   ├── loaders.py        # BEIR download/loading, metrics → JSON
+│   ├── embed.py          # encoding, .npz persistence, cosine search
 │   ├── openai_encoder.py # OpenAI embeddings API behind the same encode()
-│   ├── aggregate.py     # chunk ranking → document ranking (max-pooling)
-│   └── evaluate.py      # P@5, Recall@10, NDCG@10 via BEIR
+│   ├── aggregate.py      # chunk ranking → document ranking (max-pooling)
+│   └── evaluate.py       # P@5, Recall@10, NDCG@10 via BEIR
 ├── domain/
-│   └── chunk.py         # Chunk, fixed and recursive chunkers
-├── main.py              # build/cache embeddings, retrieve, evaluate, save
-├── significance.py      # per-query scores, paired bootstrap
-├── inspect_losers.py    # win/loss counts, query-level inspection
-├── text_lengths.py      # length statistics for choosing the chunk size
-├── tests/               # pytest: chunkers, aggregation, OpenAI encoder
-├── data/                # cached embeddings (.npz), generated
-├── datasets/            # BEIR downloads, generated
-└── results/             # metrics as JSON
+│   └── chunk.py          # Chunk, fixed and recursive chunkers
+├── significance.py       # per-query scores, paired bootstrap
+├── inspect_losers.py     # win/loss counts, query-level inspection
+├── text_lengths.py       # length statistics for choosing the chunk size
+├── tests/                # pytest: all modules above, no network needed
+├── data/                 # cached embeddings (.npz), generated
+├── datasets/             # BEIR downloads, generated
+└── results/              # metrics as JSON
 ```
 
 ---
@@ -238,22 +242,55 @@ pip install -r requirements.txt
 ### Run the benchmark
 
 ```bash
-python main.py
+python cli.py run --models bge_m3,openai_3_small --chunking fixed,recursive
 ```
 
-Builds the document, query and chunk embeddings for every model in
-`MODEL_IDS` (edit the dict in `main.py` to choose models), retrieves,
-evaluates and writes the metrics to `RESULTS_PATH`. Results of the runs above:
-`results/scifact_500docs_chunking_topk200.json` (`bge-m3`) and
-`results/scifact_500docs_openai.json` (OpenAI).
+For every model it embeds whole documents, queries and the chunks of each
+strategy, retrieves, evaluates, prints a table and saves the metrics:
 
-OpenAI models need an API key: put `OPENAI_API_KEY=...` into a `.env` file in
-the repository root (it is git-ignored). The OpenAI run embeds ~4.8k short
-texts, which costs a few cents.
+```text
+run                        P@5  Recall@10  NDCG@10
+bge_m3_classic          0.0215     0.1023   0.0933
+bge_m3_fixed_chunk      0.0220     0.1027   0.0946
+bge_m3_recursive_chunk  0.0220     0.1052   0.0955
+```
 
-Embeddings are cached in `data/` and **an existing file is never
-recomputed**. Delete the file after changing the model, the chunk size or the
-input format; otherwise stale embeddings are silently reused.
+| Option | Default | Meaning |
+|---|---|---|
+| `--models LIST` | required | `bge_m3`, `e5_large_v2`, `openai_3_small` |
+| `--chunking LIST` | `fixed,recursive` | strategies to compare, or `none` for whole documents only |
+| `--dataset` | `scifact` | any BEIR dataset name |
+| `--split` | `train` | queries split |
+| `--subset-size` | `500` | documents kept from the corpus |
+| `--chunk-size` | `500` | chunk length in characters |
+| `--top-k` | `50` | chunks retrieved per query before aggregation |
+| `--output PATH` | `results/<dataset>-<subset>_<models>.json` | metrics file |
+| `--overwrite` | off | replace an existing metrics file (refused by default) |
+| `--yes` | off | confirm calls to paid APIs |
+| `--data-dir` | `data` | embedding cache directory |
+
+Invalid arguments and `--help` are reported instantly: the command line is
+validated before torch and the pipeline are imported.
+
+**Paid models.** `openai_3_small` needs `OPENAI_API_KEY` in the environment
+or in a git-ignored `.env` file in the repository root. The CLI asks for
+`--yes` only when the model still has embeddings to compute (the full SciFact
+subset is ~4.8k short texts, a few cents). With a complete cache a model costs
+nothing and needs no confirmation.
+
+**Cache.** Embeddings are stored per configuration, so a file can never be
+mistaken for the result of another one:
+
+```text
+data/<dataset>-<subset>/<model>/
+    documents.npz
+    queries_<split>.npz
+    chunks_<strategy>_<chunk-size>.npz
+```
+
+A model is only loaded when a cache file is missing, and **an existing file is
+never recomputed or checked against the current model**. Delete it to force a
+recompute.
 
 ### Analyse the results
 
@@ -309,6 +346,9 @@ trusted.
 - `e5-large-v2` is used without its recommended `query: ` / `passage: `
   prefixes, so its numbers are likely below its potential.
 - One chunk size (500 characters) and no overlap.
+- `significance.py` and `inspect_losers.py` analyse the default setup
+  (SciFact, 500 documents, `train` queries) and read the metrics of the two
+  published runs from `results/` (paths in `SAVED_METRICS_PATHS`).
 
 ## Roadmap
 
@@ -316,8 +356,9 @@ trusted.
 - [ ] Chunks without the title, to separate the title effect from chunking
 - [ ] Full SciFact corpus (5,183 documents) for a larger effective sample
 - [ ] `e5` with query/passage prefixes; chunking experiment on `e5`
-- [ ] CLI: `python cli.py run --dataset scifact --models bge-m3,e5 --chunking fixed,recursive`
-- [ ] Unit tests for `loaders.py` and `evaluate.py`
+- [x] CLI: `python cli.py run --models bge_m3,e5_large_v2 --chunking fixed,recursive`
+- [x] Unit tests for every module (no network needed)
+- [ ] `cli.py analyze` for the significance tools on any run
 - [ ] Hybrid search (BM25 + dense) and reranking, as separate experiments
 
 ## License
