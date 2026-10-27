@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embedding-benchmark-harness"
+version = "0.1.0"
+description = "Compare embedding models and chunking strategies on BEIR retrieval benchmarks."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "beir>=2.2",
+    "numpy>=2.0",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+    "requests>=2.31",  # imported by beir.util but not declared by beir
+    "sentence-transformers>=3.0",
+]
+
+[tool.setuptools]
+packages = ["harness", "domain"]
+py-modules = ["significance"]
