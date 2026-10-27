@@ -1,4 +1,7 @@
 """Tests for Embedding: saved .npz layout and cosine search."""
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
@@ -107,3 +110,18 @@ def test_search_scores_are_cosine_similarities():
     assert result['q1']['d0'] == pytest.approx(1.0)
     assert result['q1']['d2'] == pytest.approx(np.sqrt(0.5))
     assert result['q1']['d1'] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_importing_embed_does_not_load_torch():
+    # A fresh interpreter: in the pytest process torch is already loaded
+    code = (
+        'import sys, harness.embed; '
+        'assert "torch" not in sys.modules; '
+        'assert "sentence_transformers" not in sys.modules'
+    )
+
+    result = subprocess.run(
+        [sys.executable, '-c', code], capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr

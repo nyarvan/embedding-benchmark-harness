@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Protocol
 
 import numpy as np
-from sentence_transformers import util
 
 from domain.chunk import Chunk
 
@@ -25,6 +24,22 @@ class Encoder(Protocol):
     def encode(self, inputs: list[str], /, **kwargs) -> np.ndarray:
         """Return an array of shape (len(inputs), dim), in input order."""
         ...
+
+
+def _semantic_search(
+        query_embeddings: np.ndarray, corpus_embeddings: np.ndarray,
+        top_k: int,
+) -> list[list[dict]]:
+    """Cosine top-k search: one list of {'corpus_id', 'score'} per query."""
+    # Imported here: sentence_transformers pulls in torch, which would slow
+    # down every import of this module, even for code that never searches
+    from sentence_transformers import util
+
+    # top_k must be a keyword: the third positional parameter of
+    # semantic_search is query_chunk_size, not top_k
+    return util.semantic_search(
+        query_embeddings, corpus_embeddings, top_k=top_k
+    )
 
 
 class InputMode(Enum):
@@ -100,10 +115,8 @@ class Embedding:
 
         Returns {query_id: {document_id: score}}, best match first.
         """
-        # top_k must be a keyword: the third positional parameter of
-        # semantic_search is query_chunk_size, not top_k
-        outputs = util.semantic_search(
-            queries['embeddings'], documents['embeddings'], top_k=top_k
+        outputs = _semantic_search(
+            queries['embeddings'], documents['embeddings'], top_k
         )
         result = {}
         for i, output in enumerate(outputs):
@@ -126,8 +139,8 @@ class Embedding:
         Returns {query_id: {chunk_id: score}}, best match first. Use
         `aggregate_to_documents` to get a document ranking.
         """
-        outputs = util.semantic_search(
-            queries['embeddings'], chunks['embeddings'], top_k=top_k
+        outputs = _semantic_search(
+            queries['embeddings'], chunks['embeddings'], top_k
         )
         result = {}
         for i, output in enumerate(outputs):
