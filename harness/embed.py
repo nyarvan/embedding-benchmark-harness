@@ -70,7 +70,9 @@ class Embedding:
         """Save embeddings with their ids (document or query ids)."""
         embeddings = self._require_embeddings()
 
-        np.savez(Path(path), document_ids=document_ids, embeddings=embeddings)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, document_ids=document_ids, embeddings=embeddings)
 
     def save_chunk_embeddings(
             self, path: str | Path, *, chunk_ids: np.ndarray,
@@ -83,8 +85,10 @@ class Embedding:
         """
         embeddings = self._require_embeddings()
 
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
-            Path(path), chunk_ids=chunk_ids, document_ids=document_ids,
+            path, chunk_ids=chunk_ids, document_ids=document_ids,
             embeddings=embeddings
         )
 

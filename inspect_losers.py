@@ -5,17 +5,14 @@ import numpy as np
 
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
+from harness.cache import queries_path
 from harness.embed import Embedding
 from harness.loaders import load_beir_dataset
 from significance import (
-    get_active_queries, per_query_scores, retrieve_documents,
+    CHUNK_SIZE, DATASET, SPLIT, SUBSET_SIZE, get_active_queries,
+    per_query_scores, retrieve_documents, strategy_paths,
 )
 
-STRATEGY_FILES = {
-    'baseline': 'embeddings',
-    'fixed': 'chunks_fixed',
-    'recursive': 'chunks_recursive',
-}
 EPS = 1e-9  # scores closer than this count as equal
 
 
@@ -74,15 +71,18 @@ def _shorten(text: str, limit: int = 300) -> str:
     return flat if len(flat) <= limit else flat[:limit] + '...'
 
 
-def inspect_queries(q_ids: list[str], name: str, size: int = 500) -> None:
+def inspect_queries(
+    q_ids: list[str], name: str, size: int = CHUNK_SIZE
+) -> None:
     """Print, per query, ranks of relevant docs and their best chunks.
 
     Chunk texts are rebuilt with the same chunker settings as the saved chunk
     embeddings (`size`, overlap 0); a mismatch in chunk count raises.
     """
-    documents, queries, qrels = load_beir_dataset(split='train')
+    documents, queries, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
     corpus = dict(documents)
-    q_emb = np.load(f'data/embeddings_queries_{name}.npz')
+    q_emb = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
+    paths = strategy_paths(name, chunk_size=size)
     embedding = Embedding(None)
     chunker = Chunking(size)
     splitters = {
@@ -93,12 +93,12 @@ def inspect_queries(q_ids: list[str], name: str, size: int = 500) -> None:
     # Search the whole corpus so that every relevant document gets a rank
     rankings = {
         'baseline': embedding.search(
-            q_emb, np.load(f'data/embeddings_{name}.npz'), top_k=len(corpus)
+            q_emb, np.load(paths['baseline']), top_k=len(corpus)
         )
     }
     chunk_results, chunk_texts = {}, {}
     for strategy, splitter in splitters.items():
-        chunks = np.load(f'data/chunks_{strategy}_{name}.npz')
+        chunks = np.load(paths[strategy])
         chunk_results[strategy] = embedding.search_chunks(
             q_emb, chunks, top_k=len(chunks['embeddings'])
         )
@@ -133,19 +133,15 @@ def inspect_queries(q_ids: list[str], name: str, size: int = 500) -> None:
 
 def main(name: str = 'bge_m3', top_k: int = 50) -> None:
     """Print win/loss counts and inspect the worst queries of recursive."""
-    documents, _, qrels = load_beir_dataset(split='train')
+    documents, _, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
     active = get_active_queries(qrels, documents)
-    queries = np.load(f'data/embeddings_queries_{name}.npz')
+    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
 
     scores = {
         strategy: per_query_scores(
-            qrels,
-            retrieve_documents(
-                strategy, queries, f'data/{file}_{name}.npz', top_k
-            ),
-            active,
+            qrels, retrieve_documents(strategy, queries, path, top_k), active
         )
-        for strategy, file in STRATEGY_FILES.items()
+        for strategy, path in strategy_paths(name).items()
     }
 
     count_changes(scores)

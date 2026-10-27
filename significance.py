@@ -7,10 +7,15 @@ from pathlib import Path
 import numpy as np
 
 from harness.aggregate import aggregate_to_documents
+from harness.cache import chunks_path, documents_path, queries_path
 from harness.embed import Embedding, EmbeddingFile
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset
 
+DATASET = 'scifact'
+SUBSET_SIZE = 500
+SPLIT = 'train'
+CHUNK_SIZE = 500
 CHUNK_STRATEGIES = ('fixed', 'recursive')
 METRICS = ('NDCG@10', 'Recall@10')
 EVAL_DEPTH = 10  # documents kept per query, matches the @10 metrics
@@ -41,8 +46,23 @@ def get_active_queries(
     return active
 
 
+def strategy_paths(
+    model: str, dataset: str = DATASET, subset_size: int = SUBSET_SIZE,
+    chunk_size: int = CHUNK_SIZE,
+) -> dict[str, Path]:
+    """Cache files of the three compared strategies for one model."""
+    return {
+        'baseline': documents_path(dataset, subset_size, model),
+        'fixed': chunks_path(dataset, subset_size, model, 'fixed', chunk_size),
+        'recursive': chunks_path(
+            dataset, subset_size, model, 'recursive', chunk_size
+        ),
+    }
+
+
 def retrieve_documents(
-    strategy: str, queries: EmbeddingFile, docs_path: str, top_k: int = 50
+    strategy: str, queries: EmbeddingFile, docs_path: str | Path,
+    top_k: int = 50
 ) -> dict[str, dict[str, float]]:
     """Rank documents for every query: {query_id: {doc_id: score}}.
 
@@ -149,15 +169,11 @@ def run_significance_analysis(name: str = 'bge_m3', top_k: int = 50) -> None:
     prints the paired bootstrap result and the changed queries for every pair
     of strategies and metric.
     """
-    documents, _, qrels = load_beir_dataset(split='train')
+    documents, _, qrels = load_beir_dataset(DATASET, SPLIT, SUBSET_SIZE)
     active = get_active_queries(qrels, documents)
-    queries = np.load(f'data/embeddings_queries_{name}.npz')
+    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
 
-    strategies = {
-        'baseline': f'data/embeddings_{name}.npz',
-        'fixed': f'data/chunks_fixed_{name}.npz',
-        'recursive': f'data/chunks_recursive_{name}.npz'
-    }
+    strategies = strategy_paths(name)
 
     scores = {s: per_query_scores(
         qrels, retrieve_documents(s, queries, path, top_k), active

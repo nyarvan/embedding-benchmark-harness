@@ -1,7 +1,7 @@
 venv/ 
 datasets/
 *.npy
-data/*.npz
+data/**/*.npz
 .env
 __pycache__/
 .pytest_cache/

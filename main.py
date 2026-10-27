@@ -10,11 +10,15 @@ from sentence_transformers import SentenceTransformer
 
 from domain.chunk import Chunking
 from harness.aggregate import aggregate_to_documents
+from harness.cache import chunks_path, documents_path, queries_path
 from harness.embed import Embedding, Encoder
 from harness.evaluate import evaluate
 from harness.loaders import load_beir_dataset, save_metrics
 from harness.openai_encoder import OpenAIEncoder
 
+DATASET = 'scifact'
+SUBSET_SIZE = 500
+SPLIT = 'train'
 CHUNK_SIZE = 500
 MODEL_IDS = {
     # 'bge_m3': 'BAAI/bge-m3',
@@ -185,16 +189,22 @@ def run_benchmark(
     for name, model in load_models().items():
         embedding = Embedding(model)
         runs = {
-            'classic': {'path': f'data/embeddings_{name}.npz'},
+            'classic': {'path': documents_path(DATASET, SUBSET_SIZE, name)},
             'fixed_chunk': {
-                'path': f'data/chunks_fixed_{name}.npz',
+                'path': chunks_path(
+                    DATASET, SUBSET_SIZE, name, 'fixed', CHUNK_SIZE
+                ),
                 'splitter': chunker.fixed_chunker
             },
             'recursive_chunk': {
-                'path': f'data/chunks_recursive_{name}.npz',
+                'path': chunks_path(
+                    DATASET, SUBSET_SIZE, name, 'recursive', CHUNK_SIZE
+                ),
                 'splitter': chunker.recursive_chunker
             },
-            'queries': {'path': f'data/embeddings_queries_{name}.npz'}
+            'queries': {
+                'path': queries_path(DATASET, SUBSET_SIZE, name, SPLIT)
+            }
         }
 
         for mode, values in runs.items():
@@ -240,10 +250,10 @@ def summarize_aggregated_lengths(top_k: int, name: str = 'bge_m3') -> None:
     embedding = Embedding(None)
 
     modes = {
-        'fixed': f'data/chunks_fixed_{name}.npz',
-        'recursive': f'data/chunks_recursive_{name}.npz'
+        strategy: chunks_path(DATASET, SUBSET_SIZE, name, strategy, CHUNK_SIZE)
+        for strategy in ('fixed', 'recursive')
     }
-    queries = np.load(f'data/embeddings_queries_{name}.npz')
+    queries = np.load(queries_path(DATASET, SUBSET_SIZE, name, SPLIT))
 
     results = {}
 
