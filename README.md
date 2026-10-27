@@ -8,9 +8,10 @@ It measures **P@5, Recall@10 and NDCG@10**, and goes one step further than a
 single averaged number: per-query scores, paired bootstrap confidence
 intervals, and a tool to inspect the queries where one strategy beats another.
 
-Current scope: **SciFact**, a 500-document subset, local open-source models
-(`BAAI/bge-m3`, `intfloat/e5-large-v2`) via `sentence-transformers` on CPU,
-and OpenAI `text-embedding-3-small` via the API.
+Current scope: **SciFact** (a 500-document subset and the full corpus), local
+open-source models (`BAAI/bge-m3`, `intfloat/e5-large-v2`) via
+`sentence-transformers` on CPU, and OpenAI `text-embedding-3-small` via the
+API.
 
 ---
 
@@ -144,16 +145,64 @@ nominal gain seen with `bge-m3` is not a general property of chunking on this
 data; it may be model-specific or simply noise. Telling these apart needs more
 queries, not more analysis of these 99.
 
+### 6. Full corpus: does it hold with 8× more queries?
+
+The subset leaves only 99 informative queries. On the full SciFact corpus
+(5,183 documents) all 809 `train` queries have a relevant document. The same
+experiment with OpenAI embeddings
+(`python cli.py run --models openai_3_small --subset-size 5183 --yes`, about
+six minutes):
+
+| Strategy | P@5 | Recall@10 | NDCG@10 |
+|---|---|---|---|
+| No chunking (baseline) | 0.1768 | 0.8486 | 0.7246 |
+| Fixed-size | 0.1773 | 0.8600 | 0.7361 |
+| Recursive | **0.1777** | **0.8625** | 0.7348 |
+
+Paired bootstrap over the 809 queries (`first − second`, positive means the
+first is better):
+
+| Comparison | Metric | Mean diff | 95% CI | better/worse | p (sign) |
+|---|---|---|---|---|---|
+| Fixed − baseline | NDCG@10 | +0.0115 | [+0.0021, +0.0209] | 98/94 | 0.829 |
+| Fixed − baseline | Recall@10 | +0.0114 | [−0.0021, +0.0253] | 24/14 | 0.143 |
+| Recursive − baseline | NDCG@10 | +0.0102 | [+0.0009, +0.0196] | 102/82 | 0.161 |
+| Recursive − baseline | Recall@10 | +0.0139 | [+0.0009, +0.0271] | 24/12 | 0.065 |
+| Recursive − fixed | NDCG@10 | −0.0013 | [−0.0093, +0.0067] | 84/81 | 0.876 |
+| Recursive − fixed | Recall@10 | +0.0025 | [−0.0058, +0.0111] | 8/6 | 0.791 |
+
+Both chunking strategies end up above the baseline on every metric, by about
+one point of NDCG@10 (+1.4–1.6% relative) and one point of Recall@10. The
+evidence for it is weak:
+
+- three of the four intervals against the baseline only just exclude zero
+  (lower bounds +0.001 to +0.002) and six comparisons were made without any
+  correction for that;
+- the sign test, which looks only at the direction of the change, does not
+  confirm it (p between 0.07 and 0.83);
+- about 620 of the 809 queries do not change at all, and the mean moves
+  because a minority of queries gain a lot, not because most improve.
+
+Fixed-size and recursive chunking are indistinguishable. The slightly negative
+OpenAI numbers on the 500-document subset (section 5) are consistent with the
+noise of a 99-query sample: their intervals include the full-corpus result.
+
 ### Overall
 
-On this 500-document SciFact subset, 500-character chunking neither helps nor
-hurts in a way that can be told from noise, for either model. Treat the
-`bge-m3` query-level observations above as hypotheses about how embeddings of
-long abstracts dilute single claims, not as a measured effect.
+On the 500-document subset (99 informative queries) chunking cannot be told
+from noise, for either model. On the full corpus (809 queries, OpenAI) 500
+character chunking gives a small gain of about one point of NDCG@10 and
+Recall@10 that is only marginally distinguishable from noise, and recursive is
+no better than fixed-size chunking. Treat the `bge-m3` query-level
+observations above as hypotheses about how embeddings of long abstracts dilute
+single claims, not as a measured effect; `bge-m3` has not been run on the full
+corpus.
 
-### Why the numbers are low
+### Why the 500-document numbers are low
 
-The corpus is a 500-document subset of SciFact's 5,183, but the qrels and
+This applies to the 500-document subset only; the full-corpus run in section 6
+does not have the problem. The corpus is a 500-document subset of SciFact's
+5,183, but the qrels and
 queries are not filtered. Only **99 of 809 queries** have a relevant document
 inside the subset; the other 710 score zero for every model and strategy and
 divide every average by 809. The rescaled tables above show the real level:
@@ -358,7 +407,9 @@ trusted.
 
 ## Known limitations
 
-- 500-document subset with unfiltered qrels: only 99 informative queries.
+- The 500-document subset has only 99 informative queries. The full corpus
+  has been run for OpenAI only; `bge-m3` and `e5-large-v2` on 5,183 documents
+  take hours on CPU.
 - `e5-large-v2` is used without its recommended `query: ` / `passage: `
   prefixes, so its numbers are likely below its potential.
 - One chunk size (500 characters) and no overlap.
@@ -369,7 +420,8 @@ trusted.
 
 - [x] OpenAI `text-embedding-3-small` as a third model
 - [ ] Chunks without the title, to separate the title effect from chunking
-- [ ] Full SciFact corpus (5,183 documents) for a larger effective sample
+- [x] Full SciFact corpus (5,183 documents) for a larger effective sample (OpenAI)
+- [ ] `bge-m3` on the full corpus (CPU, hours), to see whether its gain holds
 - [ ] `e5` with query/passage prefixes; chunking experiment on `e5`
 - [x] CLI: `python cli.py run --models bge_m3,e5_large_v2 --chunking fixed,recursive`
 - [x] Unit tests for every module (no network needed)

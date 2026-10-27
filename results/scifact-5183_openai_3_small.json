@@ -1,0 +1,23 @@
+[
+  {
+    "openai_3_small_classic": {
+      "P@5": 0.17676,
+      "Recall@10": 0.8486,
+      "NDCG@10": 0.72457
+    }
+  },
+  {
+    "openai_3_small_fixed_chunk": {
+      "P@5": 0.17726,
+      "Recall@10": 0.86003,
+      "NDCG@10": 0.73607
+    }
+  },
+  {
+    "openai_3_small_recursive_chunk": {
+      "P@5": 0.17775,
+      "Recall@10": 0.86251,
+      "NDCG@10": 0.7348
+    }
+  }
+]
